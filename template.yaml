@@ -1,0 +1,152 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  Tech Event Calendar Auto-Registration Agent — polls Gmail for event
+  reservation-confirmation emails, extracts structured event details with
+  Amazon Bedrock, and registers the event on a personal Google Calendar
+  (full details), optionally inviting a second attendee address (e.g. a
+  company Outlook mailbox) so it receives a standard calendar invite.
+
+Parameters:
+  ScheduleExpression:
+    Type: String
+    Default: "rate(3 hours)"
+    Description: How often the poller Lambda runs.
+  BedrockModelId:
+    Type: String
+    Default: "amazon.nova-lite-v1:0"
+  GmailSenderAllowlist:
+    Type: String
+    Default: "connpass.com,peatix.com,techplay.jp,doorkeeper.jp,eventbrite.com"
+  GmailKeywords:
+    Type: String
+    Default: "予約が完了しました,登録が完了しました,confirmation,registration confirmed"
+  GmailSearchWindow:
+    Type: String
+    Default: "newer_than:3d"
+  ConfidenceThreshold:
+    Type: String
+    Default: "0.6"
+  DefaultDurationMinutes:
+    Type: String
+    Default: "120"
+  PersonalCalendarId:
+    Type: String
+    Default: "primary"
+  AttendeeEmail:
+    Type: String
+    Default: ""
+    Description: >
+      Optional second attendee (e.g. a company Outlook mailbox) added to
+      each personal calendar event; triggers a standard calendar invite
+      email. Leave empty to skip.
+  DryRun:
+    Type: String
+    Default: "false"
+    AllowedValues: ["true", "false"]
+
+Globals:
+  Function:
+    Runtime: python3.12
+    Timeout: 90
+    MemorySize: 256
+
+Resources:
+  ProcessedEmailsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: gmail_message_id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: gmail_message_id
+          KeyType: HASH
+      TimeToLiveSpecification:
+        AttributeName: ttl
+        Enabled: true
+
+  PersonalGoogleSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: tech-event-agent/google-personal
+      Description: >
+        Personal Google OAuth client + refresh token (gmail.readonly +
+        calendar.events). Placeholder values — overwritten by
+        scripts/generate_refresh_token.py after the one-time OAuth consent
+        flow.
+      SecretString: '{"client_id":"REPLACE_ME","client_secret":"REPLACE_ME","refresh_token":"REPLACE_ME","token_uri":"https://oauth2.googleapis.com/token"}'
+
+  PollerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/
+      Handler: app.lambda_handler
+      Environment:
+        Variables:
+          DDB_TABLE_NAME: !Ref ProcessedEmailsTable
+          SECRET_NAME_PERSONAL_GOOGLE: !Ref PersonalGoogleSecret
+          PERSONAL_CALENDAR_ID: !Ref PersonalCalendarId
+          ATTENDEE_EMAIL: !Ref AttendeeEmail
+          BEDROCK_MODEL_ID: !Ref BedrockModelId
+          GMAIL_SENDER_ALLOWLIST: !Ref GmailSenderAllowlist
+          GMAIL_KEYWORDS: !Ref GmailKeywords
+          GMAIL_SEARCH_WINDOW: !Ref GmailSearchWindow
+          CONFIDENCE_THRESHOLD: !Ref ConfidenceThreshold
+          DEFAULT_DURATION_MINUTES: !Ref DefaultDurationMinutes
+          DRY_RUN: !Ref DryRun
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref ProcessedEmailsTable
+        - Statement:
+            - Effect: Allow
+              Action: secretsmanager:GetSecretValue
+              Resource:
+                - !Ref PersonalGoogleSecret
+            - Effect: Allow
+              Action: bedrock:InvokeModel
+              Resource: !Sub "arn:aws:bedrock:${AWS::Region}::foundation-model/*"
+
+  PollerFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/${PollerFunction}
+      RetentionInDays: 14
+
+  SchedulerInvocationRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: scheduler.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: InvokePollerFunction
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: lambda:InvokeFunction
+                Resource: !GetAtt PollerFunction.Arn
+
+  PollerSchedule:
+    Type: AWS::Scheduler::Schedule
+    Properties:
+      Name: tech-event-agent-poll
+      ScheduleExpression: !Ref ScheduleExpression
+      FlexibleTimeWindow:
+        Mode: "OFF"
+      Target:
+        Arn: !GetAtt PollerFunction.Arn
+        RoleArn: !GetAtt SchedulerInvocationRole.Arn
+
+Outputs:
+  PollerFunctionName:
+    Value: !Ref PollerFunction
+  ProcessedEmailsTableName:
+    Value: !Ref ProcessedEmailsTable
+  PersonalGoogleSecretArn:
+    Value: !Ref PersonalGoogleSecret
