@@ -4,8 +4,8 @@ Description: >
   Tech Event Calendar Auto-Registration Agent — polls Gmail for event
   reservation-confirmation emails, extracts structured event details with
   Amazon Bedrock, and registers the event on a personal Google Calendar
-  (full details), optionally inviting a second attendee address (e.g. a
-  company Outlook mailbox) so it receives a standard calendar invite.
+  (full details), optionally inviting one or more attendee addresses (e.g.
+  a company Outlook mailbox) so they receive a standard calendar invite.
 
 Parameters:
   ScheduleExpression:
@@ -17,7 +17,12 @@ Parameters:
     Default: "amazon.nova-lite-v1:0"
   GmailSenderAllowlist:
     Type: String
-    Default: "connpass.com,peatix.com,techplay.jp,doorkeeper.jp,eventbrite.com"
+    Default: "peatix.com,techplay.jp,doorkeeper.jp,eventbrite.com"
+    Description: >
+      connpass.com is intentionally excluded from the default — connpass
+      events are handled via the ConnpassIcsSecret feed instead. See the
+      README's migration notes before adding connpass.com back here, since
+      running both paths at once for connpass can double-register events.
   GmailKeywords:
     Type: String
     Default: "予約が完了しました,登録が完了しました,confirmation,registration confirmed"
@@ -33,13 +38,22 @@ Parameters:
   PersonalCalendarId:
     Type: String
     Default: "primary"
-  AttendeeEmail:
+  AttendeeEmails:
     Type: String
     Default: ""
     Description: >
-      Optional second attendee (e.g. a company Outlook mailbox) added to
-      each personal calendar event; triggers a standard calendar invite
-      email. Leave empty to skip.
+      Optional comma-separated list of attendee addresses (e.g. a company
+      Outlook mailbox) added to each personal calendar event; triggers a
+      standard calendar invite email. Leave empty to skip.
+  EventVisibility:
+    Type: String
+    Default: "default"
+    AllowedValues: ["default", "private"]
+    Description: >
+      Google Calendar visibility for the created event. "private" hides the
+      event's details from other people who have viewing access to this
+      calendar (e.g. coworkers with shared-calendar visibility), while still
+      showing full details to anyone directly invited via AttendeeEmails.
   DryRun:
     Type: String
     Default: "false"
@@ -77,6 +91,19 @@ Resources:
         flow.
       SecretString: '{"client_id":"REPLACE_ME","client_secret":"REPLACE_ME","refresh_token":"REPLACE_ME","token_uri":"https://oauth2.googleapis.com/token"}'
 
+  ConnpassIcsSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: tech-event-agent/connpass-ics
+      Description: >
+        connpass's personal "joined events" iCalendar subscription URL
+        (webcal://connpass.com/joinmanage/<token>.ics), available from your
+        connpass account settings. Leave the SecretString as REPLACE_ME (or
+        don't populate it) to skip connpass ICS-based sync entirely — in
+        that case connpass events keep flowing through the Gmail+Bedrock
+        path as long as connpass.com remains in GmailSenderAllowlist.
+      SecretString: "REPLACE_ME"
+
   PollerFunction:
     Type: AWS::Serverless::Function
     Properties:
@@ -86,8 +113,10 @@ Resources:
         Variables:
           DDB_TABLE_NAME: !Ref ProcessedEmailsTable
           SECRET_NAME_PERSONAL_GOOGLE: !Ref PersonalGoogleSecret
+          SECRET_NAME_CONNPASS_ICS: !Ref ConnpassIcsSecret
           PERSONAL_CALENDAR_ID: !Ref PersonalCalendarId
-          ATTENDEE_EMAIL: !Ref AttendeeEmail
+          ATTENDEE_EMAILS: !Ref AttendeeEmails
+          EVENT_VISIBILITY: !Ref EventVisibility
           BEDROCK_MODEL_ID: !Ref BedrockModelId
           GMAIL_SENDER_ALLOWLIST: !Ref GmailSenderAllowlist
           GMAIL_KEYWORDS: !Ref GmailKeywords
@@ -103,6 +132,7 @@ Resources:
               Action: secretsmanager:GetSecretValue
               Resource:
                 - !Ref PersonalGoogleSecret
+                - !Ref ConnpassIcsSecret
             - Effect: Allow
               Action: bedrock:InvokeModel
               Resource: !Sub "arn:aws:bedrock:${AWS::Region}::foundation-model/*"
@@ -150,3 +180,5 @@ Outputs:
     Value: !Ref ProcessedEmailsTable
   PersonalGoogleSecretArn:
     Value: !Ref PersonalGoogleSecret
+  ConnpassIcsSecretArn:
+    Value: !Ref ConnpassIcsSecret

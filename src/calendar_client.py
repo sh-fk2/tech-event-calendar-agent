@@ -15,10 +15,15 @@ def build_service(credentials):
 
 
 def create_personal_event(
-    credentials, calendar_id: str, event: ExtractedEvent, attendee_email: str | None = None
+    credentials,
+    calendar_id: str,
+    event: ExtractedEvent,
+    attendee_emails: list[str] | None = None,
+    event_visibility: str = "default",
 ) -> str:
     service = build_service(credentials)
     start, end = _resolve_start_end(event, default_duration_minutes=120)
+    attendee_emails = attendee_emails or []
 
     body = {
         "summary": event.title,
@@ -27,10 +32,12 @@ def create_personal_event(
         "start": start,
         "end": end,
     }
-    if attendee_email:
-        body["attendees"] = [{"email": attendee_email}]
+    if attendee_emails:
+        body["attendees"] = [{"email": email} for email in attendee_emails]
+    if event_visibility == "private":
+        body["visibility"] = "private"
 
-    send_updates = "all" if attendee_email else "none"
+    send_updates = "all" if attendee_emails else "none"
     created = service.events().insert(
         calendarId=calendar_id, body=body, sendUpdates=send_updates
     ).execute()

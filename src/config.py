@@ -10,8 +10,10 @@ def _split_csv(value: str) -> list[str]:
 class Config:
     table_name: str
     secret_arn_personal: str
+    connpass_ics_secret_arn: str
     personal_calendar_id: str
-    attendee_email: str | None
+    attendee_emails: list[str]
+    event_visibility: str
     bedrock_model_id: str
     sender_allowlist: list[str]
     keywords: list[str]
@@ -25,8 +27,10 @@ def load() -> Config:
     return Config(
         table_name=os.environ["DDB_TABLE_NAME"],
         secret_arn_personal=os.environ["SECRET_NAME_PERSONAL_GOOGLE"],
+        connpass_ics_secret_arn=os.environ.get("SECRET_NAME_CONNPASS_ICS", ""),
         personal_calendar_id=os.environ.get("PERSONAL_CALENDAR_ID", "primary"),
-        attendee_email=os.environ.get("ATTENDEE_EMAIL") or None,
+        attendee_emails=_split_csv(os.environ.get("ATTENDEE_EMAILS", "")),
+        event_visibility=os.environ.get("EVENT_VISIBILITY", "default"),
         bedrock_model_id=os.environ.get("BEDROCK_MODEL_ID", "amazon.nova-lite-v1:0"),
         sender_allowlist=_split_csv(os.environ.get("GMAIL_SENDER_ALLOWLIST", "")),
         keywords=_split_csv(os.environ.get("GMAIL_KEYWORDS", "")),
