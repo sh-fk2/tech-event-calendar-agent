@@ -7,7 +7,7 @@ from bedrock_extractor import ExtractedEvent
 
 log = logging.getLogger(__name__)
 
-_DEFAULT_TIMEZONE = "Asia/Tokyo"
+DEFAULT_TIMEZONE = "Asia/Tokyo"
 
 
 def build_service(credentials):
@@ -56,7 +56,7 @@ def _resolve_start_end(event: ExtractedEvent, default_duration_minutes: int) -> 
     start: dict = {"dateTime": start_dt.isoformat()}
     end: dict = {"dateTime": end_dt.isoformat()}
     if start_dt.tzinfo is None:
-        start["timeZone"] = _DEFAULT_TIMEZONE
+        start["timeZone"] = DEFAULT_TIMEZONE
     if end_dt.tzinfo is None:
-        end["timeZone"] = _DEFAULT_TIMEZONE
+        end["timeZone"] = DEFAULT_TIMEZONE
     return start, end
