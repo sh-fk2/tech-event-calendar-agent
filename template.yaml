@@ -58,6 +58,25 @@ Parameters:
     Type: String
     Default: "false"
     AllowedValues: ["true", "false"]
+  PersonalGoogleAccountEmail:
+    Type: String
+    Description: >
+      The personal Gmail address this agent operates on. ReauthFunction
+      refuses to overwrite PersonalGoogleSecret unless the Google account
+      that completes the browser consent flow matches this address exactly.
+  AlarmNotificationEmail:
+    Type: String
+    Default: "carpe.diem.awsome@gmail.com"
+    Description: >
+      Address that receives an alert email when PollerFunction fails (e.g.
+      Google OAuth refresh token expiry). Subscription must be confirmed via
+      the link in the confirmation email after deploy.
+  AlarmPeriodSeconds:
+    Type: Number
+    Default: 10800
+    Description: >
+      CloudWatch Alarm evaluation period, in seconds. Should roughly match
+      ScheduleExpression so one poll failure triggers one alarm evaluation.
 
 Globals:
   Function:
@@ -173,6 +192,101 @@ Resources:
         Arn: !GetAtt PollerFunction.Arn
         RoleArn: !GetAtt SchedulerInvocationRole.Arn
 
+  WebOAuthClientSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: tech-event-agent/web-oauth-client
+      Description: >
+        "Web application" type OAuth client (client_id + client_secret)
+        created manually in Google Cloud Console for ReauthFunction. Must
+        NOT be the same client as the "Desktop app" one used by
+        scripts/generate_refresh_token.py — Google requires a Web
+        application client for a fixed HTTPS redirect URI. Register the
+        ReauthFunctionUrl output as an authorized redirect URI on this
+        client before using it.
+      SecretString: '{"client_id":"REPLACE_ME","client_secret":"REPLACE_ME"}'
+
+  ReauthSharedSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: tech-event-agent/reauth-shared-secret
+      Description: >
+        Auto-generated bearer token gating ReauthFunctionUrl. Append it as
+        ?key=<this value> to the start URL — treat the resulting bookmark
+        like a password.
+      GenerateSecretString:
+        ExcludePunctuation: true
+        PasswordLength: 48
+
+  ReauthFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/
+      Handler: reauth_app.lambda_handler
+      # Public, unauthenticated Function URL — cap concurrency so an
+      # anonymous scanner hammering the endpoint can't run up the bill.
+      ReservedConcurrentExecutions: 2
+      FunctionUrlConfig:
+        AuthType: NONE
+      Environment:
+        Variables:
+          SECRET_NAME_PERSONAL_GOOGLE: !Ref PersonalGoogleSecret
+          SECRET_NAME_WEB_OAUTH_CLIENT: !Ref WebOAuthClientSecret
+          SECRET_NAME_SHARED_SECRET: !Ref ReauthSharedSecret
+          EXPECTED_OWNER_EMAIL: !Ref PersonalGoogleAccountEmail
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action: secretsmanager:GetSecretValue
+              Resource:
+                - !Ref WebOAuthClientSecret
+                - !Ref ReauthSharedSecret
+            - Effect: Allow
+              Action: secretsmanager:PutSecretValue
+              Resource: !Ref PersonalGoogleSecret
+
+  ReauthFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/${ReauthFunction}
+      RetentionInDays: 14
+
+  PollerAlarmTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub "${AWS::StackName}-poller-alarm"
+
+  PollerAlarmSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      TopicArn: !Ref PollerAlarmTopic
+      Protocol: email
+      Endpoint: !Ref AlarmNotificationEmail
+
+  PollerErrorAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${AWS::StackName}-poller-errors"
+      AlarmDescription: >
+        PollerFunction failed at least once in the last poll cycle (e.g.
+        Google OAuth refresh token expired). Open the ReauthFunctionUrl
+        output on your phone to re-authorize, then check CloudWatch Logs if
+        the failure persists.
+      Namespace: AWS/Lambda
+      MetricName: Errors
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref PollerFunction
+      Statistic: Sum
+      Period: !Ref AlarmPeriodSeconds
+      EvaluationPeriods: 1
+      DatapointsToAlarm: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref PollerAlarmTopic
+
 Outputs:
   PollerFunctionName:
     Value: !Ref PollerFunction
@@ -182,3 +296,14 @@ Outputs:
     Value: !Ref PersonalGoogleSecret
   ConnpassIcsSecretArn:
     Value: !Ref ConnpassIcsSecret
+  PollerAlarmTopicArn:
+    Value: !Ref PollerAlarmTopic
+  ReauthFunctionUrl:
+    Value: !GetAtt ReauthFunctionUrl.FunctionUrl
+    Description: >
+      Base URL for re-authorization. Visit "<this URL>?key=<ReauthSharedSecret
+      value>" on your phone whenever PollerErrorAlarm fires.
+  WebOAuthClientSecretArn:
+    Value: !Ref WebOAuthClientSecret
+  ReauthSharedSecretArn:
+    Value: !Ref ReauthSharedSecret
