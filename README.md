@@ -6,6 +6,12 @@ The reservation itself is not automated, since it requires a manual login to eac
 
 See [CHANGELOG.md](CHANGELOG.md) for what changed between versions.
 
+## Architecture
+
+![Architecture](docs/architecture.drawio.png)
+
+Editable source: [docs/architecture.drawio](docs/architecture.drawio) (the PNG embeds the diagram XML, so it can also be opened directly in draw.io).
+
 ## Components
 
 - **Amazon EventBridge Scheduler** — triggers the Lambda every 3 hours
